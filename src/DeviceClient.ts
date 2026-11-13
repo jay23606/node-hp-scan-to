@@ -40,6 +40,7 @@ import {
   type EsclWalkupProbeResult,
 } from "./type/EsclWalkupProbe.js";
 import PathHelper from "./PathHelper.js";
+import { DeviceNotReadyError } from "./type/DeviceNotReadyError.js";
 import { getLoggerForFile } from "./logger.js";
 import {
   CertificatePinError,
@@ -398,6 +399,7 @@ export default class DeviceClient {
    * /eSCL/ScanCapabilities, others (HP firmware) only /eSCL/ScannerCapabilities.
    */
   async getEsclScanCapsFromWellKnownPath(): Promise<EsclScanCaps | null> {
+    const failures: string[] = [];
     for (const path of [
       "/eSCL/ScanCapabilities",
       "/eSCL/ScannerCapabilities",
@@ -414,12 +416,28 @@ export default class DeviceClient {
         if (response.status === 200) {
           return await EsclScanCaps.createScanCaps(response.data);
         }
+        if (response.status !== 404 && response.status !== 405) {
+          failures.push(`${path}: HTTP ${response.status}`);
+        }
       } catch (error) {
         if (error instanceof CertificatePinError) {
           throw error;
         }
         logger.debug({ error }, `eSCL capabilities probe for ${path} failed`);
+        failures.push(
+          `${path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
+    }
+
+    // 404/405 on every candidate means the device simply does not serve the
+    // standard eSCL endpoints. Anything else is a device that answers on the
+    // network but is not ready yet (403 while booting, 5xx, TLS reset, ...),
+    // which callers are expected to retry.
+    if (failures.length > 0) {
+      throw new DeviceNotReadyError(
+        `The eSCL capability probe failed (${failures.join("; ")}); the device is reachable but its services are not ready yet.`,
+      );
     }
     return null;
   }
